@@ -1,5 +1,7 @@
 package com.github.casper1051.ridarintegration;
 
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.project.ProjectManager;
 import com.jediterm.terminal.CursorShape;
 import com.jediterm.terminal.Questioner;
 import com.jediterm.terminal.TerminalColor;
@@ -1188,6 +1190,20 @@ public class RobotDashboard extends JPanel {
             return widget;
         }
 
+        public File getCLionProjectDirectory() {
+            Project[] projects = ProjectManager.getInstance().getOpenProjects();
+            if (projects.length > 0) {
+                // Gets the base path of the currently active project in CLion
+                String basePath = projects[0].getBasePath();
+                if (basePath != null) {
+                    return new File(basePath);
+                }
+            }
+
+            // Fallback to standard user.dir if no open project is found
+            return new File(System.getProperty("user.dir"));
+        }
+
         private void startShell(JediTermWidget widget, int cols, int rows) {
             new Thread(() -> {
                 try {
@@ -1203,7 +1219,7 @@ public class RobotDashboard extends JPanel {
                     env.put("TERM", "xterm-256color");
                     env.put("COLORTERM", "truecolor");
                     //working dir
-                    pb.directory(new File(System.getProperty("user.dir")));
+                    pb.directory(getCLionProjectDirectory());
                     pb.redirectErrorStream(true);
 
                     shellProcess = pb.start();
