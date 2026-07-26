@@ -12,19 +12,24 @@ import com.jediterm.terminal.ui.settings.SettingsProvider;
 import javax.swing.plaf.basic.BasicScrollBarUI;
 
 import javax.swing.*;
+import javax.swing.border.Border;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,17 +39,30 @@ public class RobotDashboard extends JPanel {
     private static final String ROBOT_IP = "192.168.125.1";
     private static final int ROBOT_PORT = 8080;
 
-    private static final Color BG_DARK = new Color(43, 43, 43);
-    private static final Color PANEL_BG = new Color(60, 63, 65);
-    private static final Color BORDER_COLOR = new Color(85, 85, 85);
-    private static final Color TEXT_COLOR = new Color(187, 187, 187);
-    private static final Color ACCENT_BLUE = new Color(75, 110, 175);
-    private static final Color ACCENT_RED = new Color(200, 80, 80);
-    private static final Color ACCENT_GREEN = new Color(80, 180, 80);
-    private static final Color BUTTON_BG = new Color(70, 72, 74);
-    private static final Color DANGER_RED = new Color(153, 51, 51);
-    private static final Color WARN_ORANGE = new Color(190, 110, 30);
-    private static final Color OK_GREEN = new Color(50, 120, 50);
+    
+    
+    private static final Color BG_DARK = new Color(0, 0, 0);
+    private static final Color PANEL_BG = new Color(18, 18, 18);
+    private static final Color BORDER_COLOR = new Color(50, 50, 50);
+    private static final Color TEXT_COLOR = new Color(190, 190, 190);
+    private static final Color ACCENT_BLUE = new Color(80, 120, 190);
+    private static final Color ACCENT_RED = new Color(210, 90, 90);
+    private static final Color ACCENT_GREEN = new Color(90, 190, 90);
+    private static final Color BUTTON_BG = new Color(28, 28, 28);
+    private static final Color DANGER_RED = new Color(140, 40, 40);
+    private static final Color WARN_ORANGE = new Color(170, 100, 20);
+    private static final Color OK_GREEN = new Color(40, 110, 40);
+
+    
+    private static final String CARD_ROOT = "ROOT";
+    private static final String CARD_EFFECTORS_MENU = "EFFECTORS_MENU";
+    private static final String CARD_EFFECTORS_MOTORS = "EFFECTORS_MOTORS";
+    private static final String CARD_EFFECTORS_SERVOS = "EFFECTORS_SERVOS";
+    private static final String CARD_SENSORS_MENU = "SENSORS_MENU";
+    private static final String CARD_SENSORS_DIGITAL = "SENSORS_DIGITAL";
+    private static final String CARD_SENSORS_ANALOG = "SENSORS_ANALOG";
+    private static final String CARD_SENSORS_IMU = "SENSORS_IMU";
+    private static final String CARD_OTHER = "OTHER";
 
     private final JLabel statusLabel = new JLabel("Checking Connection...", SwingConstants.CENTER);
     private final JTextArea logArea = new JTextArea();
@@ -52,11 +70,14 @@ public class RobotDashboard extends JPanel {
     private final CardLayout mainCardLayout = new CardLayout();
     private final JPanel mainContentPanel = new JPanel(mainCardLayout);
 
-    private final CardLayout effectorCardLayout = new CardLayout();
-    private final JPanel effectorPanel = new JPanel(effectorCardLayout);
-
-    private final CardLayout sensorCardLayout = new CardLayout();
-    private final JPanel sensorPanel = new JPanel(sensorCardLayout);
+    
+    
+    
+    private final JPanel navHeader = new JPanel(new BorderLayout());
+    private final JButton navBackButton = createStyledButton("\u2190 Back");
+    private final JLabel navTitleLabel = new JLabel();
+    private final Deque<String[]> navStack = new ArrayDeque<>(); 
+    private String currentCard = CARD_ROOT;
 
     private final JLabel[] motorPosLabels = new JLabel[4];
     private final JSlider[] motorSliders = new JSlider[4];
@@ -96,7 +117,11 @@ public class RobotDashboard extends JPanel {
     private volatile boolean threadsRunning = true;
     private Thread telemetryThread;
 
-    private JButton btnHome, btnEffectors, btnSensors, btnOther;
+    
+    private static final float MIN_SCALE = 0.7f;
+    private static final float MAX_SCALE = 2.2f;
+    private static final float SCALE_STEP = 0.1f;
+    private float uiScale = 1.0f;
 
     public RobotDashboard() {
         setLayout(new BorderLayout());
@@ -104,6 +129,7 @@ public class RobotDashboard extends JPanel {
         setMinimumSize(new Dimension(800, 500));
         setPreferredSize(new Dimension(1200, 800));
 
+        
         JPanel topHeader = new JPanel(new BorderLayout());
         topHeader.setBackground(PANEL_BG);
         topHeader.setBorder(new CompoundBorder(
@@ -123,6 +149,24 @@ public class RobotDashboard extends JPanel {
         ));
         updateStatusBadge(false, false, "INITIALIZING");
 
+        JButton btnScaleDown = createScaleButton("\u2212"); 
+        btnScaleDown.setToolTipText("Zoom out (Ctrl/Cmd -)");
+        btnScaleDown.addActionListener(e -> adjustScale(-SCALE_STEP));
+
+        JButton btnScaleReset = createScaleButton("=");
+        btnScaleReset.setToolTipText("Reset zoom");
+        btnScaleReset.addActionListener(e -> resetScale());
+
+        JButton btnScaleUp = createScaleButton("+");
+        btnScaleUp.setToolTipText("Zoom in (Ctrl/Cmd +)");
+        btnScaleUp.addActionListener(e -> adjustScale(SCALE_STEP));
+
+        JPanel scaleGroup = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 0));
+        scaleGroup.setBackground(PANEL_BG);
+        scaleGroup.add(btnScaleDown);
+        scaleGroup.add(btnScaleReset);
+        scaleGroup.add(btnScaleUp);
+
         JButton btnResetUi = createStyledButton("Reset UI");
         btnResetUi.setFont(new Font("SansSerif", Font.BOLD, 11));
         btnResetUi.setBackground(WARN_ORANGE);
@@ -132,40 +176,49 @@ public class RobotDashboard extends JPanel {
         JPanel headerRightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         headerRightPanel.setBackground(PANEL_BG);
         headerRightPanel.add(statusLabel);
+        headerRightPanel.add(scaleGroup);
         headerRightPanel.add(btnResetUi);
 
         topHeader.add(titleLabel, BorderLayout.WEST);
         topHeader.add(headerRightPanel, BorderLayout.EAST);
 
-        JPanel navBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 4));
-        navBar.setBackground(PANEL_BG);
+        
+        navHeader.setBackground(PANEL_BG);
+        navHeader.setBorder(new CompoundBorder(
+                new LineBorder(BORDER_COLOR, 1),
+                new EmptyBorder(6, 10, 6, 10)
+        ));
+        navBackButton.setFont(new Font("SansSerif", Font.BOLD, 11));
+        navBackButton.addActionListener(e -> goBack());
+        navBackButton.setVisible(false);
 
-        btnHome = createNavButton("Home");
-        btnEffectors = createNavButton("Effectors");
-        btnSensors = createNavButton("Sensors");
-        btnOther = createNavButton("Tools");
+        navTitleLabel.setForeground(Color.WHITE);
+        navTitleLabel.setFont(new Font("SansSerif", Font.BOLD, 13));
+        navTitleLabel.setHorizontalAlignment(SwingConstants.LEFT);
+        navTitleLabel.setBorder(new EmptyBorder(0, 10, 0, 0));
 
-        btnHome.addActionListener(e -> switchMainTab("HOME", btnHome));
-        btnEffectors.addActionListener(e -> switchMainTab("EFFECTORS", btnEffectors));
-        btnSensors.addActionListener(e -> switchMainTab("SENSORS", btnSensors));
-        btnOther.addActionListener(e -> switchMainTab("OTHER", btnOther));
-
-        navBar.add(btnHome);
-        navBar.add(btnEffectors);
-        navBar.add(btnSensors);
-        navBar.add(btnOther);
+        navHeader.add(navBackButton, BorderLayout.WEST);
+        navHeader.add(navTitleLabel, BorderLayout.CENTER);
 
         JPanel topContainer = new JPanel(new BorderLayout());
         topContainer.add(topHeader, BorderLayout.NORTH);
-        topContainer.add(navBar, BorderLayout.SOUTH);
+        topContainer.add(navHeader, BorderLayout.SOUTH);
 
-        initHomeOverviewView();
-        initEffectorsView();
-        initSensorsView();
+        
+        
+        initRootView();
+        initEffectorsViews();
+        initSensorsViews();
         initOtherView();
 
+        JPanel contentWrapper = new JPanel(new BorderLayout());
+        contentWrapper.setBackground(BG_DARK);
+        contentWrapper.add(mainContentPanel, BorderLayout.CENTER);
+        mainContentPanel.setMinimumSize(new Dimension(300, 200));
+
+        
         logArea.setEditable(false);
-        logArea.setBackground(new Color(25, 25, 25));
+        logArea.setBackground(new Color(10, 10, 10));
         logArea.setForeground(new Color(169, 183, 198));
         logArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
 
@@ -176,19 +229,20 @@ public class RobotDashboard extends JPanel {
         ));
         logScroll.setMinimumSize(new Dimension(200, 10));
 
-        mainContentPanel.setMinimumSize(new Dimension(300, 200));
-
+        
         EmbeddedTerminalPanel embeddedTerminal = new EmbeddedTerminalPanel();
         embeddedTerminal.setMinimumSize(new Dimension(250, 200));
 
+        
         JSplitPane leftVerticalSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
         leftVerticalSplit.setBackground(BG_DARK);
-        leftVerticalSplit.setTopComponent(mainContentPanel);
+        leftVerticalSplit.setTopComponent(contentWrapper);
         leftVerticalSplit.setBottomComponent(logScroll);
         leftVerticalSplit.setResizeWeight(0.70);
         leftVerticalSplit.setContinuousLayout(true);
         leftVerticalSplit.setMinimumSize(new Dimension(300, 300));
 
+        
         JSplitPane mainHorizontalSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         mainHorizontalSplit.setBackground(BG_DARK);
         mainHorizontalSplit.setLeftComponent(leftVerticalSplit);
@@ -200,310 +254,43 @@ public class RobotDashboard extends JPanel {
         add(topContainer, BorderLayout.NORTH);
         add(mainHorizontalSplit, BorderLayout.CENTER);
 
-        switchMainTab("HOME", btnHome);
+        showCard(CARD_ROOT, "Overview");
+        setupScaleKeyBindings();
         startBackgroundServices();
     }
 
-    private class EmbeddedTerminalPanel extends JPanel {
-        private JediTermWidget termWidget;
-        private Process shellProcess;
+    
 
-        public EmbeddedTerminalPanel() {
-            setLayout(new BorderLayout());
-            setBackground(new Color(30, 30, 30));
-            setBorder(BorderFactory.createTitledBorder(
-                    new LineBorder(BORDER_COLOR), "Interactive Shell", TitledBorder.LEFT, TitledBorder.TOP,
-                    new Font("SansSerif", Font.BOLD, 11), TEXT_COLOR
-            ));
+    /** Push the current screen onto the back-stack and show a new one. */
+    private void navigateTo(String cardName, String title) {
+        navStack.push(new String[]{currentCard, navTitleLabel.getText()});
+        showCard(cardName, title);
+    }
 
-            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-            toolbar.setBackground(PANEL_BG);
-
-            JButton btnSsh = createStyledButton("SSH...");
-            btnSsh.addActionListener(e -> openSshSession());
-
-            JButton btnRestart = createStyledButton("Restart Shell");
-            btnRestart.addActionListener(e -> restartShell());
-
-            toolbar.add(btnSsh);
-            toolbar.add(btnRestart);
-
-            add(toolbar, BorderLayout.NORTH);
-
-            termWidget = buildTerminalWidget();
-            add(termWidget, BorderLayout.CENTER);
-
-            startShell(termWidget, 100, 30);
-
-            Runtime.getRuntime().addShutdownHook(new Thread(this::disposeShell));
-        }
-
-        private JediTermWidget buildTerminalWidget() {
-            JediTermWidget widget = new StyledJediTermWidget(100, 30, new DarkTerminalSettingsProvider());
-            widget.setBackground(Color.BLACK);
-            widget.getTerminalPanel().setCursorShape(CursorShape.BLINK_BLOCK);
-            return widget;
-        }
-
-        private void startShell(JediTermWidget widget, int cols, int rows) {
-            new Thread(() -> {
-                try {
-                    String shell = resolveLoginShell();
-                    String initCommand = String.format(
-                            "stty rows %d columns %d >/dev/null 2>&1; exec %s -l", rows, cols, shell);
-
-                    ProcessBuilder pb = isMac()
-                            ? new ProcessBuilder("script", "-q", "/dev/null", "/bin/sh", "-c", initCommand)
-                            : new ProcessBuilder("script", "-qc", initCommand, "/dev/null");
-
-                    Map<String, String> env = pb.environment();
-                    env.put("TERM", "xterm-256color");
-                    env.put("COLORTERM", "truecolor");
-                    pb.directory(new File(System.getProperty("user.dir")));
-                    pb.redirectErrorStream(true);
-
-                    shellProcess = pb.start();
-                    TtyConnector connector = new ScriptPtyConnector(shellProcess);
-
-                    SwingUtilities.invokeLater(() -> {
-                        widget.setTtyConnector(connector);
-                        widget.start();
-                        widget.requestFocusInWindow();
-                    });
-                } catch (Exception ex) {
-                    SwingUtilities.invokeLater(() ->
-                            appendLog("[ERROR] Failed to spawn shell: " + ex.getMessage()));
-                }
-            }, "Ridar-Script-Shell-Thread").start();
-        }
-
-        private boolean isMac() {
-            return System.getProperty("os.name", "").toLowerCase().contains("mac");
-        }
-
-        private String resolveLoginShell() {
-            String envShell = System.getenv("SHELL");
-            if (envShell != null && new File(envShell).exists()) return envShell;
-            if (new File("/bin/zsh").exists()) return "/bin/zsh";
-            return "/bin/bash";
-        }
-
-        private void openSshSession() {
-            String target = JOptionPane.showInputDialog(
-                    this, "SSH target (e.g. user@192.168.1.50):", "New SSH Session", JOptionPane.PLAIN_MESSAGE);
-            if (target != null && !target.trim().isEmpty()) {
-                sendRaw("ssh " + target.trim() + "\n");
-            }
-            termWidget.requestFocusInWindow();
-        }
-
-        private void sendRaw(String text) {
-            try {
-                TtyConnector connector = termWidget.getTtyConnector();
-                if (connector != null) connector.write(text);
-            } catch (IOException ex) {
-                appendLog("[ERROR] Failed to send to shell: " + ex.getMessage());
-            }
-        }
-
-        private void restartShell() {
-            disposeShell();
-            remove(termWidget);
-            termWidget = buildTerminalWidget();
-            add(termWidget, BorderLayout.CENTER);
-            revalidate();
-            repaint();
-            startShell(termWidget, 100, 30);
-        }
-
-        private void disposeShell() {
-            try {
-                if (shellProcess != null && shellProcess.isAlive()) {
-                    shellProcess.destroy();
-                }
-            } catch (Exception ignored) {}
+    /** Pop the back-stack, if any, and show the previous screen. */
+    private void goBack() {
+        if (!navStack.isEmpty()) {
+            String[] prev = navStack.pop();
+            showCard(prev[0], prev[1]);
         }
     }
 
-    private static class DarkTerminalSettingsProvider extends DefaultSettingsProvider {
-        @Override
-        public TextStyle getDefaultStyle() {
-            return new TextStyle(TerminalColor.WHITE, TerminalColor.BLACK);
-        }
-
-        @Override
-        public TextStyle getSelectionColor() {
-            return new TextStyle(TerminalColor.BLACK, TerminalColor.rgb(100, 130, 190));
-        }
+    /** Reset all the way back to the root menu (used by Reset UI). */
+    private void goToRoot() {
+        navStack.clear();
+        showCard(CARD_ROOT, "Overview");
     }
 
-    private static class StyledJediTermWidget extends JediTermWidget {
-        StyledJediTermWidget(int columns, int lines, SettingsProvider settingsProvider) {
-            super(columns, lines, settingsProvider);
-        }
-
-        @Override
-        protected JScrollBar createScrollBar() {
-            JScrollBar bar = super.createScrollBar();
-            bar.setPreferredSize(new Dimension(10, Integer.MAX_VALUE));
-            bar.setOpaque(true);
-            bar.setBackground(new Color(30, 30, 30));
-            bar.setUI(new DarkScrollBarUI());
-            return bar;
-        }
-    }
-
-    private static class DarkScrollBarUI extends BasicScrollBarUI {
-        @Override
-        protected void configureScrollBarColors() {
-            thumbColor = new Color(90, 90, 90);
-            thumbDarkShadowColor = new Color(20, 20, 20);
-            thumbHighlightColor = new Color(110, 110, 110);
-            thumbLightShadowColor = new Color(70, 70, 70);
-            trackColor = new Color(30, 30, 30);
-            trackHighlightColor = new Color(30, 30, 30);
-        }
-
-        @Override
-        protected JButton createDecreaseButton(int orientation) {
-            return zeroSizeButton();
-        }
-
-        @Override
-        protected JButton createIncreaseButton(int orientation) {
-            return zeroSizeButton();
-        }
-
-        private JButton zeroSizeButton() {
-            JButton button = new JButton();
-            button.setPreferredSize(new Dimension(0, 0));
-            button.setMinimumSize(new Dimension(0, 0));
-            button.setMaximumSize(new Dimension(0, 0));
-            return button;
-        }
-    }
-
-    private static class ScriptPtyConnector implements TtyConnector {
-        private final Process process;
-        private final Reader reader;
-        private final Writer writer;
-
-        ScriptPtyConnector(Process process) {
-            this.process = process;
-            this.reader = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8);
-            this.writer = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
-        }
-
-        @Override
-        public boolean init(Questioner questioner) {
-            return true;
-        }
-
-        @Override
-        public void close() {
-            process.destroy();
-        }
-
-        @Override
-        public String getName() {
-            return "local-shell";
-        }
-
-        @Override
-        public int read(char[] buf, int offset, int length) throws IOException {
-            return reader.read(buf, offset, length);
-        }
-
-        @Override
-        public void write(byte[] bytes) throws IOException {
-            writer.write(new String(bytes, StandardCharsets.UTF_8));
-            writer.flush();
-        }
-
-        @Override
-        public void write(String string) throws IOException {
-            writer.write(string);
-            writer.flush();
-        }
-
-        @Override
-        public boolean isConnected() {
-            return process.isAlive();
-        }
-
-        @Override
-        public int waitFor() throws InterruptedException {
-            return process.waitFor();
-        }
-
-        @Override
-        public boolean ready() throws IOException {
-            return reader.ready();
-        }
-
-        @Override
-        public void resize(Dimension termWinSize) {
-        }
-    }
-
-
-    private void resetUiState() {
-        appendLog("[SYSTEM] Resetting UI state and reconnecting client loops...");
-
-        sensor1Data.clear();
-        sensor2Data.clear();
-        gyroXData.clear(); gyroYData.clear(); gyroZData.clear();
-        accelXData.clear(); accelYData.clear(); accelZData.clear();
-
-        for (int i = 0; i < 4; i++) {
-            if (motorSliders[i] != null) motorSliders[i].setValue(0);
-            if (servoSliders[i] != null) {
-                servoSliders[i].setValue(90);
-                servoSliders[i].setEnabled(true);
-            }
-            if (servoEnableToggles[i] != null) {
-                servoEnableToggles[i].setSelected(true);
-                servoEnableToggles[i].setText("Enabled");
-                servoEnableToggles[i].setBackground(OK_GREEN);
-            }
-        }
-
-        for (JLabel label : digitalStateLabels) {
-            if (label != null) {
-                label.setText("0 (OFF)");
-                label.setBackground(DANGER_RED);
-            }
-        }
-
-        stopBackgroundServices();
-        startBackgroundServices();
-
-        repaintImuGraphs();
-        if (analogGraphPanel != null) analogGraphPanel.repaint();
-
-        appendLog("[SYSTEM] Reset complete.");
-    }
-
-    private void startBackgroundServices() {
-        threadsRunning = true;
-        startUnifiedClientConnection();
-    }
-
-    private void stopBackgroundServices() {
-        threadsRunning = false;
-        if (telemetryThread != null) telemetryThread.interrupt();
-    }
-
-    private void switchMainTab(String cardName, JButton activeBtn) {
+    private void showCard(String cardName, String title) {
+        currentCard = cardName;
         mainCardLayout.show(mainContentPanel, cardName);
-        JButton[] buttons = {btnHome, btnEffectors, btnSensors, btnOther};
-        for (JButton btn : buttons) {
-            btn.setBackground(BUTTON_BG);
-        }
-        activeBtn.setBackground(ACCENT_BLUE);
+        navTitleLabel.setText(title);
+        navBackButton.setVisible(!navStack.isEmpty());
     }
 
-    private void initHomeOverviewView() {
+    
+
+    private void initRootView() {
         JPanel homePanel = new JPanel();
         homePanel.setLayout(new BoxLayout(homePanel, BoxLayout.Y_AXIS));
         homePanel.setBackground(BG_DARK);
@@ -516,9 +303,9 @@ public class RobotDashboard extends JPanel {
         JButton quickSensors = createStyledButton("Open Sensor Monitor (Digital, Analog, IMU)");
         JButton quickTools = createStyledButton("Open Diagnostic Tools");
 
-        quickEffectors.addActionListener(e -> switchMainTab("EFFECTORS", btnEffectors));
-        quickSensors.addActionListener(e -> switchMainTab("SENSORS", btnSensors));
-        quickTools.addActionListener(e -> switchMainTab("OTHER", btnOther));
+        quickEffectors.addActionListener(e -> navigateTo(CARD_EFFECTORS_MENU, "Effectors"));
+        quickSensors.addActionListener(e -> navigateTo(CARD_SENSORS_MENU, "Sensors"));
+        quickTools.addActionListener(e -> navigateTo(CARD_OTHER, "Tools"));
 
         cardNav.add(quickEffectors);
         cardNav.add(quickSensors);
@@ -540,32 +327,47 @@ public class RobotDashboard extends JPanel {
         homePanel.add(Box.createRigidArea(new Dimension(0, 10)));
         homePanel.add(cardInfo);
 
-        mainContentPanel.add(createStyledScrollPane(homePanel), "HOME");
+        mainContentPanel.add(createStyledScrollPane(homePanel), CARD_ROOT);
     }
 
-    private void initEffectorsView() {
-        JPanel outerPanel = new JPanel(new BorderLayout());
-        outerPanel.setBackground(BG_DARK);
+    /** A simple full-width "menu item" button used by the submenu screens. */
+    private JButton createMenuItemButton(String label) {
+        JButton btn = createStyledButton(label);
+        btn.setHorizontalAlignment(SwingConstants.LEFT);
+        btn.setFont(new Font("SansSerif", Font.BOLD, 13));
+        btn.setBorder(new CompoundBorder(
+                new LineBorder(BORDER_COLOR, 1),
+                new EmptyBorder(12, 14, 12, 14)
+        ));
+        return btn;
+    }
 
-        JPanel subNav = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 6));
-        subNav.setBackground(PANEL_BG);
-        subNav.setBorder(new LineBorder(BORDER_COLOR, 1));
+    private void initEffectorsViews() {
+        
+        JPanel menuPanel = new JPanel();
+        menuPanel.setLayout(new BoxLayout(menuPanel, BoxLayout.Y_AXIS));
+        menuPanel.setBackground(BG_DARK);
+        menuPanel.setBorder(new EmptyBorder(12, 12, 12, 12));
 
-        JButton btnMotors = createStyledButton("Motors (Ports 0-3)");
-        JButton btnServos = createStyledButton("Servos (Ports 0-3)");
+        JButton btnMotorsItem = createMenuItemButton("Motors (Ports 0-3)");
+        JButton btnServosItem = createMenuItemButton("Servos (Ports 0-3)");
 
-        btnMotors.addActionListener(e -> effectorCardLayout.show(effectorPanel, "MOTORS"));
-        btnServos.addActionListener(e -> {
-            effectorCardLayout.show(effectorPanel, "SERVOS");
+        btnMotorsItem.addActionListener(e -> navigateTo(CARD_EFFECTORS_MOTORS, "Motors"));
+        btnServosItem.addActionListener(e -> {
+            navigateTo(CARD_EFFECTORS_SERVOS, "Servos");
             if (!servoPositionsLoaded) {
                 fetchInitialServoPositions();
                 servoPositionsLoaded = true;
             }
         });
 
-        subNav.add(btnMotors);
-        subNav.add(btnServos);
+        menuPanel.add(btnMotorsItem);
+        menuPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+        menuPanel.add(btnServosItem);
 
+        mainContentPanel.add(menuPanel, CARD_EFFECTORS_MENU);
+
+        
         JPanel motorsListContainer = new JPanel();
         motorsListContainer.setLayout(new BoxLayout(motorsListContainer, BoxLayout.Y_AXIS));
         motorsListContainer.setBackground(BG_DARK);
@@ -646,8 +448,9 @@ public class RobotDashboard extends JPanel {
             motorsListContainer.add(Box.createRigidArea(new Dimension(0, 8)));
         }
 
-        JScrollPane motorsScrollPane = createStyledScrollPane(motorsListContainer);
+        mainContentPanel.add(createStyledScrollPane(motorsListContainer), CARD_EFFECTORS_MOTORS);
 
+        
         JPanel servosListContainer = new JPanel();
         servosListContainer.setLayout(new BoxLayout(servosListContainer, BoxLayout.Y_AXIS));
         servosListContainer.setBackground(BG_DARK);
@@ -724,15 +527,7 @@ public class RobotDashboard extends JPanel {
             servosListContainer.add(Box.createRigidArea(new Dimension(0, 8)));
         }
 
-        JScrollPane servosScrollPane = createStyledScrollPane(servosListContainer);
-
-        effectorPanel.add(motorsScrollPane, "MOTORS");
-        effectorPanel.add(servosScrollPane, "SERVOS");
-
-        outerPanel.add(subNav, BorderLayout.NORTH);
-        outerPanel.add(effectorPanel, BorderLayout.CENTER);
-
-        mainContentPanel.add(outerPanel, "EFFECTORS");
+        mainContentPanel.add(createStyledScrollPane(servosListContainer), CARD_EFFECTORS_SERVOS);
     }
 
     private void fetchInitialServoPositions() {
@@ -742,26 +537,30 @@ public class RobotDashboard extends JPanel {
         }
     }
 
-    private void initSensorsView() {
-        JPanel outerPanel = new JPanel(new BorderLayout());
-        outerPanel.setBackground(BG_DARK);
+    private void initSensorsViews() {
+        
+        JPanel menuPanel = new JPanel();
+        menuPanel.setLayout(new BoxLayout(menuPanel, BoxLayout.Y_AXIS));
+        menuPanel.setBackground(BG_DARK);
+        menuPanel.setBorder(new EmptyBorder(12, 12, 12, 12));
 
-        JPanel subNav = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 6));
-        subNav.setBackground(PANEL_BG);
-        subNav.setBorder(new LineBorder(BORDER_COLOR, 1));
+        JButton btnDigitalItem = createMenuItemButton("Digital I/O");
+        JButton btnAnalogItem = createMenuItemButton("Analog Sensors");
+        JButton btnImuItem = createMenuItemButton("IMU Waveforms");
 
-        JButton btnDigital = createStyledButton("Digital");
-        JButton btnAnalog = createStyledButton("Analog");
-        JButton btnImu = createStyledButton("IMU Waveforms");
+        btnDigitalItem.addActionListener(e -> navigateTo(CARD_SENSORS_DIGITAL, "Digital"));
+        btnAnalogItem.addActionListener(e -> navigateTo(CARD_SENSORS_ANALOG, "Analog"));
+        btnImuItem.addActionListener(e -> navigateTo(CARD_SENSORS_IMU, "IMU Waveforms"));
 
-        btnDigital.addActionListener(e -> sensorCardLayout.show(sensorPanel, "DIGITAL"));
-        btnAnalog.addActionListener(e -> sensorCardLayout.show(sensorPanel, "ANALOG"));
-        btnImu.addActionListener(e -> sensorCardLayout.show(sensorPanel, "IMU"));
+        menuPanel.add(btnDigitalItem);
+        menuPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+        menuPanel.add(btnAnalogItem);
+        menuPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+        menuPanel.add(btnImuItem);
 
-        subNav.add(btnDigital);
-        subNav.add(btnAnalog);
-        subNav.add(btnImu);
+        mainContentPanel.add(menuPanel, CARD_SENSORS_MENU);
 
+        
         JPanel digitalPanel = new JPanel(new GridLayout(0, 1, 6, 6));
         digitalPanel.setBackground(BG_DARK);
         digitalPanel.setBorder(new EmptyBorder(8, 8, 8, 8));
@@ -788,8 +587,9 @@ public class RobotDashboard extends JPanel {
             digitalPanel.add(p);
         }
 
-        JScrollPane digitalScrollPane = createStyledScrollPane(digitalPanel);
+        mainContentPanel.add(createStyledScrollPane(digitalPanel), CARD_SENSORS_DIGITAL);
 
+        
         JPanel analogPanel = new JPanel(new BorderLayout());
         analogPanel.setBackground(BG_DARK);
 
@@ -817,6 +617,9 @@ public class RobotDashboard extends JPanel {
         analogPanel.add(selectorBar, BorderLayout.NORTH);
         analogPanel.add(analogGraphPanel, BorderLayout.CENTER);
 
+        mainContentPanel.add(analogPanel, CARD_SENSORS_ANALOG);
+
+        
         JPanel imuMasterPanel = new JPanel(new BorderLayout());
         imuMasterPanel.setBackground(BG_DARK);
 
@@ -888,14 +691,7 @@ public class RobotDashboard extends JPanel {
         imuMasterPanel.add(imuGraphCardPanel, BorderLayout.CENTER);
         imuMasterPanel.add(imuBadges, BorderLayout.SOUTH);
 
-        sensorPanel.add(digitalScrollPane, "DIGITAL");
-        sensorPanel.add(analogPanel, "ANALOG");
-        sensorPanel.add(imuMasterPanel, "IMU");
-
-        outerPanel.add(subNav, BorderLayout.NORTH);
-        outerPanel.add(sensorPanel, BorderLayout.CENTER);
-
-        mainContentPanel.add(outerPanel, "SENSORS");
+        mainContentPanel.add(imuMasterPanel, CARD_SENSORS_IMU);
     }
 
     private void styleCheckBox(JCheckBox chk, Color c) {
@@ -919,8 +715,10 @@ public class RobotDashboard extends JPanel {
         infoLabel.setFont(new Font("SansSerif", Font.PLAIN, 12));
 
         otherPanel.add(infoLabel);
-        mainContentPanel.add(otherPanel, "OTHER");
+        mainContentPanel.add(otherPanel, CARD_OTHER);
     }
+
+    
 
     private JScrollPane createStyledScrollPane(Component content) {
         JScrollPane scrollPane = new JScrollPane(content);
@@ -942,12 +740,6 @@ public class RobotDashboard extends JPanel {
         return panel;
     }
 
-    private JButton createNavButton(String text) {
-        JButton btn = createStyledButton(text);
-        btn.setFont(new Font("SansSerif", Font.BOLD, 11));
-        return btn;
-    }
-
     private JButton createStyledButton(String text) {
         JButton button = new JButton(text);
         button.setFocusPainted(false);
@@ -962,10 +754,174 @@ public class RobotDashboard extends JPanel {
         return button;
     }
 
+    private JButton createScaleButton(String text) {
+        JButton button = new JButton(text);
+        button.setFocusPainted(false);
+        button.setBackground(BUTTON_BG);
+        button.setForeground(TEXT_COLOR);
+        button.setFont(new Font("Monospaced", Font.BOLD, 12));
+        button.setBorder(new CompoundBorder(
+                new LineBorder(BORDER_COLOR, 1),
+                new EmptyBorder(3, 8, 3, 8)
+        ));
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        return button;
+    }
+
     private void styleComboBox(JComboBox<String> box) {
         box.setBackground(BUTTON_BG);
         box.setForeground(TEXT_COLOR);
         box.setFont(new Font("SansSerif", Font.PLAIN, 11));
+    }
+
+    
+
+    private void setupScaleKeyBindings() {
+        int menuMask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
+        InputMap im = getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+        ActionMap am = getActionMap();
+
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, menuMask), "scaleIncrease");
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, menuMask | KeyEvent.SHIFT_DOWN_MASK), "scaleIncrease");
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_ADD, menuMask), "scaleIncrease");
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, menuMask), "scaleDecrease");
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, menuMask), "scaleDecrease");
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_0, menuMask), "scaleReset");
+
+        am.put("scaleIncrease", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                adjustScale(SCALE_STEP);
+            }
+        });
+        am.put("scaleDecrease", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                adjustScale(-SCALE_STEP);
+            }
+        });
+        am.put("scaleReset", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                resetScale();
+            }
+        });
+    }
+
+    private void adjustScale(float delta) {
+        setUiScale(uiScale + delta);
+    }
+
+    private void resetScale() {
+        setUiScale(1.0f);
+    }
+
+    private void setUiScale(float newScale) {
+        uiScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
+        applyScale(this);
+        revalidate();
+        repaint();
+    }
+
+    /**
+     * Recursively rescales font sizes (component fonts, and any TitledBorder titles)
+     * relative to each component's original ("1.0x") size, which is lazily captured
+     * the first time scaling is applied.
+     */
+    private void applyScale(Component comp) {
+        if (comp instanceof JComponent) {
+            JComponent jc = (JComponent) comp;
+
+            Font f = jc.getFont();
+            if (f != null) {
+                Object baseObj = jc.getClientProperty("baseFontSize");
+                float baseSize;
+                if (baseObj instanceof Float) {
+                    baseSize = (Float) baseObj;
+                } else {
+                    baseSize = f.getSize2D();
+                    jc.putClientProperty("baseFontSize", baseSize);
+                }
+                jc.setFont(f.deriveFont(baseSize * uiScale));
+            }
+
+            Border border = jc.getBorder();
+            if (border instanceof CompoundBorder) {
+                Border outer = ((CompoundBorder) border).getOutsideBorder();
+                if (outer instanceof TitledBorder) {
+                    TitledBorder tb = (TitledBorder) outer;
+                    Font tf = tb.getTitleFont();
+                    if (tf != null) {
+                        Object baseTitleObj = jc.getClientProperty("baseTitleFontSize");
+                        float baseTitleSize;
+                        if (baseTitleObj instanceof Float) {
+                            baseTitleSize = (Float) baseTitleObj;
+                        } else {
+                            baseTitleSize = tf.getSize2D();
+                            jc.putClientProperty("baseTitleFontSize", baseTitleSize);
+                        }
+                        tb.setTitleFont(tf.deriveFont(baseTitleSize * uiScale));
+                    }
+                }
+            }
+        }
+
+        if (comp instanceof Container) {
+            for (Component child : ((Container) comp).getComponents()) {
+                applyScale(child);
+            }
+        }
+    }
+
+    
+
+    private void resetUiState() {
+        appendLog("[SYSTEM] Resetting UI state and reconnecting client loops...");
+
+        sensor1Data.clear();
+        sensor2Data.clear();
+        gyroXData.clear(); gyroYData.clear(); gyroZData.clear();
+        accelXData.clear(); accelYData.clear(); accelZData.clear();
+
+        for (int i = 0; i < 4; i++) {
+            if (motorSliders[i] != null) motorSliders[i].setValue(0);
+            if (servoSliders[i] != null) {
+                servoSliders[i].setValue(90);
+                servoSliders[i].setEnabled(true);
+            }
+            if (servoEnableToggles[i] != null) {
+                servoEnableToggles[i].setSelected(true);
+                servoEnableToggles[i].setText("Enabled");
+                servoEnableToggles[i].setBackground(OK_GREEN);
+            }
+        }
+
+        for (JLabel label : digitalStateLabels) {
+            if (label != null) {
+                label.setText("0 (OFF)");
+                label.setBackground(DANGER_RED);
+            }
+        }
+
+        stopBackgroundServices();
+        startBackgroundServices();
+
+        repaintImuGraphs();
+        if (analogGraphPanel != null) analogGraphPanel.repaint();
+
+        goToRoot();
+
+        appendLog("[SYSTEM] Reset complete.");
+    }
+
+    private void startBackgroundServices() {
+        threadsRunning = true;
+        startUnifiedClientConnection();
+    }
+
+    private void stopBackgroundServices() {
+        threadsRunning = false;
+        if (telemetryThread != null) telemetryThread.interrupt();
     }
 
     private synchronized void updateStatusBadge(boolean reachable, boolean serverOnline, String statusMsg) {
@@ -1174,6 +1130,279 @@ public class RobotDashboard extends JPanel {
         });
     }
 
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    private class EmbeddedTerminalPanel extends JPanel {
+        private JediTermWidget termWidget;
+        private Process shellProcess;
+
+        public EmbeddedTerminalPanel() {
+            setLayout(new BorderLayout());
+            setBackground(new Color(10, 10, 10));
+            setBorder(BorderFactory.createTitledBorder(
+                    new LineBorder(BORDER_COLOR), "Interactive Shell", TitledBorder.LEFT, TitledBorder.TOP,
+                    new Font("SansSerif", Font.BOLD, 11), TEXT_COLOR
+            ));
+
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+            toolbar.setBackground(PANEL_BG);
+
+            JButton btnSsh = createStyledButton("SSH...");
+            btnSsh.addActionListener(e -> openSshSession());
+
+            JButton btnRestart = createStyledButton("Restart Shell");
+            btnRestart.addActionListener(e -> restartShell());
+
+            toolbar.add(btnSsh);
+            toolbar.add(btnRestart);
+
+            add(toolbar, BorderLayout.NORTH);
+
+            termWidget = buildTerminalWidget();
+            add(termWidget, BorderLayout.CENTER);
+
+            startShell(termWidget, 100, 30);
+
+            
+            Runtime.getRuntime().addShutdownHook(new Thread(this::disposeShell));
+        }
+
+        private JediTermWidget buildTerminalWidget() {
+            JediTermWidget widget = new StyledJediTermWidget(100, 30, new DarkTerminalSettingsProvider());
+            widget.setBackground(Color.BLACK);
+            widget.getTerminalPanel().setCursorShape(CursorShape.BLINK_BLOCK);
+            return widget;
+        }
+
+        private void startShell(JediTermWidget widget, int cols, int rows) {
+            new Thread(() -> {
+                try {
+                    String shell = resolveLoginShell();
+                    String initCommand = String.format(
+                            "stty rows %d columns %d >/dev/null 2>&1; exec %s -l", rows, cols, shell);
+
+                    ProcessBuilder pb = isMac()
+                            ? new ProcessBuilder("script", "-q", "/dev/null", "/bin/sh", "-c", initCommand)
+                            : new ProcessBuilder("script", "-qc", initCommand, "/dev/null");
+
+                    Map<String, String> env = pb.environment();
+                    env.put("TERM", "xterm-256color");
+                    env.put("COLORTERM", "truecolor");
+                    //working dir
+                    pb.directory(new File(System.getProperty("user.dir")));
+                    pb.redirectErrorStream(true);
+
+                    shellProcess = pb.start();
+                    TtyConnector connector = new ScriptPtyConnector(shellProcess);
+
+                    SwingUtilities.invokeLater(() -> {
+                        widget.setTtyConnector(connector);
+                        widget.start();
+                        widget.requestFocusInWindow();
+                    });
+                } catch (Exception ex) {
+                    SwingUtilities.invokeLater(() ->
+                            appendLog("[ERROR] Failed to spawn shell: " + ex.getMessage()));
+                }
+            }, "Ridar-Script-Shell-Thread").start();
+        }
+
+        private boolean isMac() {
+            return System.getProperty("os.name", "").toLowerCase().contains("mac");
+        }
+
+        private String resolveLoginShell() {
+            String envShell = System.getenv("SHELL");
+            if (envShell != null && new File(envShell).exists()) return envShell;
+            if (new File("/bin/zsh").exists()) return "/bin/zsh";
+            return "/bin/bash";
+        }
+
+        private void openSshSession() {
+            String target = JOptionPane.showInputDialog(
+                    this, "SSH target (e.g. user@192.168.1.50):", "New SSH Session", JOptionPane.PLAIN_MESSAGE);
+            if (target != null && !target.trim().isEmpty()) {
+                sendRaw("ssh " + target.trim() + "\n");
+            }
+            termWidget.requestFocusInWindow();
+        }
+
+        private void sendRaw(String text) {
+            try {
+                TtyConnector connector = termWidget.getTtyConnector();
+                if (connector != null) connector.write(text);
+            } catch (IOException ex) {
+                appendLog("[ERROR] Failed to send to shell: " + ex.getMessage());
+            }
+        }
+
+        private void restartShell() {
+            disposeShell();
+            remove(termWidget);
+            termWidget = buildTerminalWidget();
+            add(termWidget, BorderLayout.CENTER);
+            revalidate();
+            repaint();
+            startShell(termWidget, 100, 30);
+        }
+
+        private void disposeShell() {
+            try {
+                if (shellProcess != null && shellProcess.isAlive()) {
+                    shellProcess.destroy();
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    
+    
+    
+    
+    
+    private static class DarkTerminalSettingsProvider extends DefaultSettingsProvider {
+        @Override
+        public TextStyle getDefaultStyle() {
+            return new TextStyle(TerminalColor.WHITE, TerminalColor.BLACK);
+        }
+
+        @Override
+        public TextStyle getSelectionColor() {
+            return new TextStyle(TerminalColor.BLACK, TerminalColor.rgb(100, 130, 190));
+        }
+    }
+
+    
+    
+    
+    private static class StyledJediTermWidget extends JediTermWidget {
+        StyledJediTermWidget(int columns, int lines, SettingsProvider settingsProvider) {
+            super(columns, lines, settingsProvider);
+        }
+
+        @Override
+        protected JScrollBar createScrollBar() {
+            JScrollBar bar = super.createScrollBar();
+            bar.setPreferredSize(new Dimension(10, Integer.MAX_VALUE));
+            bar.setOpaque(true);
+            bar.setBackground(new Color(15, 15, 15));
+            bar.setUI(new DarkScrollBarUI());
+            return bar;
+        }
+    }
+
+    private static class DarkScrollBarUI extends BasicScrollBarUI {
+        @Override
+        protected void configureScrollBarColors() {
+            thumbColor = new Color(90, 90, 90);
+            thumbDarkShadowColor = new Color(20, 20, 20);
+            thumbHighlightColor = new Color(110, 110, 110);
+            thumbLightShadowColor = new Color(70, 70, 70);
+            trackColor = new Color(15, 15, 15);
+            trackHighlightColor = new Color(15, 15, 15);
+        }
+
+        @Override
+        protected JButton createDecreaseButton(int orientation) {
+            return zeroSizeButton();
+        }
+
+        @Override
+        protected JButton createIncreaseButton(int orientation) {
+            return zeroSizeButton();
+        }
+
+        private JButton zeroSizeButton() {
+            JButton button = new JButton();
+            button.setPreferredSize(new Dimension(0, 0));
+            button.setMinimumSize(new Dimension(0, 0));
+            button.setMaximumSize(new Dimension(0, 0));
+            return button;
+        }
+    }
+
+    
+    
+    private static class ScriptPtyConnector implements TtyConnector {
+        private final Process process;
+        private final Reader reader;
+        private final Writer writer;
+
+        ScriptPtyConnector(Process process) {
+            this.process = process;
+            this.reader = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8);
+            this.writer = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public boolean init(Questioner questioner) {
+            return true;
+        }
+
+        @Override
+        public void close() {
+            process.destroy();
+        }
+
+        @Override
+        public String getName() {
+            return "local-shell";
+        }
+
+        @Override
+        public int read(char[] buf, int offset, int length) throws IOException {
+            return reader.read(buf, offset, length);
+        }
+
+        @Override
+        public void write(byte[] bytes) throws IOException {
+            writer.write(new String(bytes, StandardCharsets.UTF_8));
+            writer.flush();
+        }
+
+        @Override
+        public void write(String string) throws IOException {
+            writer.write(string);
+            writer.flush();
+        }
+
+        @Override
+        public boolean isConnected() {
+            return process.isAlive();
+        }
+
+        @Override
+        public int waitFor() throws InterruptedException {
+            return process.waitFor();
+        }
+
+        @Override
+        public boolean ready() throws IOException {
+            return reader.ready();
+        }
+
+        @Override
+        public void resize(Dimension termWinSize) {
+            
+            
+            
+        }
+    }
+
     private class AnalogGraphPanel extends JPanel {
         public AnalogGraphPanel() {
             setBackground(BG_DARK);
@@ -1188,7 +1417,7 @@ public class RobotDashboard extends JPanel {
             int w = getWidth();
             int h = getHeight();
 
-            g2.setColor(new Color(55, 58, 60));
+            g2.setColor(new Color(40, 40, 40));
             for (int i = 0; i < w; i += 40) g2.drawLine(i, 0, i, h);
             for (int i = 0; i < h; i += 40) g2.drawLine(0, i, w, i);
 
@@ -1276,7 +1505,7 @@ public class RobotDashboard extends JPanel {
             int w = getWidth();
             int h = getHeight();
 
-            g2.setColor(new Color(55, 58, 60));
+            g2.setColor(new Color(40, 40, 40));
             for (int i = 0; i < w; i += 40) g2.drawLine(i, 0, i, h);
             for (int i = 0; i < h; i += 40) g2.drawLine(0, i, w, i);
 
