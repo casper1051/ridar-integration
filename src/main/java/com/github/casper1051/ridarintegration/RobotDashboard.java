@@ -1,14 +1,23 @@
 package com.github.casper1051.ridarintegration;
 
+import com.jediterm.terminal.CursorShape;
+import com.jediterm.terminal.Questioner;
+import com.jediterm.terminal.TerminalColor;
+import com.jediterm.terminal.TextStyle;
+import com.jediterm.terminal.TtyConnector;
+import com.jediterm.terminal.ui.JediTermWidget;
+import com.jediterm.terminal.ui.settings.DefaultSettingsProvider;
+import com.jediterm.terminal.ui.settings.SettingsProvider;
+
+import javax.swing.plaf.basic.BasicScrollBarUI;
+
 import javax.swing.*;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -16,7 +25,9 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class RobotDashboard extends JPanel {
 
@@ -85,14 +96,13 @@ public class RobotDashboard extends JPanel {
     private volatile boolean threadsRunning = true;
     private Thread telemetryThread;
 
-    private long lastSuccessfulPacketTime = 0;
-    private static final long CONNECTION_TIMEOUT_MS = 4000;
-
     private JButton btnHome, btnEffectors, btnSensors, btnOther;
 
     public RobotDashboard() {
         setLayout(new BorderLayout());
         setBackground(BG_DARK);
+        setMinimumSize(new Dimension(800, 500));
+        setPreferredSize(new Dimension(1200, 800));
 
         JPanel topHeader = new JPanel(new BorderLayout());
         topHeader.setBackground(PANEL_BG);
@@ -133,7 +143,7 @@ public class RobotDashboard extends JPanel {
         btnHome = createNavButton("Home");
         btnEffectors = createNavButton("Effectors");
         btnSensors = createNavButton("Sensors");
-        btnOther = createNavButton("Tools & SSH");
+        btnOther = createNavButton("Tools");
 
         btnHome.addActionListener(e -> switchMainTab("HOME", btnHome));
         btnEffectors.addActionListener(e -> switchMainTab("EFFECTORS", btnEffectors));
@@ -164,21 +174,278 @@ public class RobotDashboard extends JPanel {
                 new LineBorder(BORDER_COLOR), "Telemetry & Debug Log", TitledBorder.LEFT, TitledBorder.TOP,
                 new Font("SansSerif", Font.BOLD, 11), TEXT_COLOR
         ));
+        logScroll.setMinimumSize(new Dimension(200, 10));
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
-        splitPane.setBackground(BG_DARK);
-        splitPane.setTopComponent(mainContentPanel);
-        splitPane.setBottomComponent(logScroll);
-        splitPane.setResizeWeight(0.65);
-        splitPane.setContinuousLayout(true);
+        mainContentPanel.setMinimumSize(new Dimension(300, 200));
+
+        EmbeddedTerminalPanel embeddedTerminal = new EmbeddedTerminalPanel();
+        embeddedTerminal.setMinimumSize(new Dimension(250, 200));
+
+        JSplitPane leftVerticalSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
+        leftVerticalSplit.setBackground(BG_DARK);
+        leftVerticalSplit.setTopComponent(mainContentPanel);
+        leftVerticalSplit.setBottomComponent(logScroll);
+        leftVerticalSplit.setResizeWeight(0.70);
+        leftVerticalSplit.setContinuousLayout(true);
+        leftVerticalSplit.setMinimumSize(new Dimension(300, 300));
+
+        JSplitPane mainHorizontalSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+        mainHorizontalSplit.setBackground(BG_DARK);
+        mainHorizontalSplit.setLeftComponent(leftVerticalSplit);
+        mainHorizontalSplit.setRightComponent(embeddedTerminal);
+        mainHorizontalSplit.setResizeWeight(0.60);
+        mainHorizontalSplit.setDividerSize(6);
+        mainHorizontalSplit.setContinuousLayout(true);
 
         add(topContainer, BorderLayout.NORTH);
-        add(splitPane, BorderLayout.CENTER);
+        add(mainHorizontalSplit, BorderLayout.CENTER);
 
         switchMainTab("HOME", btnHome);
-
         startBackgroundServices();
     }
+
+    private class EmbeddedTerminalPanel extends JPanel {
+        private JediTermWidget termWidget;
+        private Process shellProcess;
+
+        public EmbeddedTerminalPanel() {
+            setLayout(new BorderLayout());
+            setBackground(new Color(30, 30, 30));
+            setBorder(BorderFactory.createTitledBorder(
+                    new LineBorder(BORDER_COLOR), "Interactive Shell", TitledBorder.LEFT, TitledBorder.TOP,
+                    new Font("SansSerif", Font.BOLD, 11), TEXT_COLOR
+            ));
+
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+            toolbar.setBackground(PANEL_BG);
+
+            JButton btnSsh = createStyledButton("SSH...");
+            btnSsh.addActionListener(e -> openSshSession());
+
+            JButton btnRestart = createStyledButton("Restart Shell");
+            btnRestart.addActionListener(e -> restartShell());
+
+            toolbar.add(btnSsh);
+            toolbar.add(btnRestart);
+
+            add(toolbar, BorderLayout.NORTH);
+
+            termWidget = buildTerminalWidget();
+            add(termWidget, BorderLayout.CENTER);
+
+            startShell(termWidget, 100, 30);
+
+            Runtime.getRuntime().addShutdownHook(new Thread(this::disposeShell));
+        }
+
+        private JediTermWidget buildTerminalWidget() {
+            JediTermWidget widget = new StyledJediTermWidget(100, 30, new DarkTerminalSettingsProvider());
+            widget.setBackground(Color.BLACK);
+            widget.getTerminalPanel().setCursorShape(CursorShape.BLINK_BLOCK);
+            return widget;
+        }
+
+        private void startShell(JediTermWidget widget, int cols, int rows) {
+            new Thread(() -> {
+                try {
+                    String shell = resolveLoginShell();
+                    String initCommand = String.format(
+                            "stty rows %d columns %d >/dev/null 2>&1; exec %s -l", rows, cols, shell);
+
+                    ProcessBuilder pb = isMac()
+                            ? new ProcessBuilder("script", "-q", "/dev/null", "/bin/sh", "-c", initCommand)
+                            : new ProcessBuilder("script", "-qc", initCommand, "/dev/null");
+
+                    Map<String, String> env = pb.environment();
+                    env.put("TERM", "xterm-256color");
+                    env.put("COLORTERM", "truecolor");
+                    pb.directory(new File(System.getProperty("user.dir")));
+                    pb.redirectErrorStream(true);
+
+                    shellProcess = pb.start();
+                    TtyConnector connector = new ScriptPtyConnector(shellProcess);
+
+                    SwingUtilities.invokeLater(() -> {
+                        widget.setTtyConnector(connector);
+                        widget.start();
+                        widget.requestFocusInWindow();
+                    });
+                } catch (Exception ex) {
+                    SwingUtilities.invokeLater(() ->
+                            appendLog("[ERROR] Failed to spawn shell: " + ex.getMessage()));
+                }
+            }, "Ridar-Script-Shell-Thread").start();
+        }
+
+        private boolean isMac() {
+            return System.getProperty("os.name", "").toLowerCase().contains("mac");
+        }
+
+        private String resolveLoginShell() {
+            String envShell = System.getenv("SHELL");
+            if (envShell != null && new File(envShell).exists()) return envShell;
+            if (new File("/bin/zsh").exists()) return "/bin/zsh";
+            return "/bin/bash";
+        }
+
+        private void openSshSession() {
+            String target = JOptionPane.showInputDialog(
+                    this, "SSH target (e.g. user@192.168.1.50):", "New SSH Session", JOptionPane.PLAIN_MESSAGE);
+            if (target != null && !target.trim().isEmpty()) {
+                sendRaw("ssh " + target.trim() + "\n");
+            }
+            termWidget.requestFocusInWindow();
+        }
+
+        private void sendRaw(String text) {
+            try {
+                TtyConnector connector = termWidget.getTtyConnector();
+                if (connector != null) connector.write(text);
+            } catch (IOException ex) {
+                appendLog("[ERROR] Failed to send to shell: " + ex.getMessage());
+            }
+        }
+
+        private void restartShell() {
+            disposeShell();
+            remove(termWidget);
+            termWidget = buildTerminalWidget();
+            add(termWidget, BorderLayout.CENTER);
+            revalidate();
+            repaint();
+            startShell(termWidget, 100, 30);
+        }
+
+        private void disposeShell() {
+            try {
+                if (shellProcess != null && shellProcess.isAlive()) {
+                    shellProcess.destroy();
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private static class DarkTerminalSettingsProvider extends DefaultSettingsProvider {
+        @Override
+        public TextStyle getDefaultStyle() {
+            return new TextStyle(TerminalColor.WHITE, TerminalColor.BLACK);
+        }
+
+        @Override
+        public TextStyle getSelectionColor() {
+            return new TextStyle(TerminalColor.BLACK, TerminalColor.rgb(100, 130, 190));
+        }
+    }
+
+    private static class StyledJediTermWidget extends JediTermWidget {
+        StyledJediTermWidget(int columns, int lines, SettingsProvider settingsProvider) {
+            super(columns, lines, settingsProvider);
+        }
+
+        @Override
+        protected JScrollBar createScrollBar() {
+            JScrollBar bar = super.createScrollBar();
+            bar.setPreferredSize(new Dimension(10, Integer.MAX_VALUE));
+            bar.setOpaque(true);
+            bar.setBackground(new Color(30, 30, 30));
+            bar.setUI(new DarkScrollBarUI());
+            return bar;
+        }
+    }
+
+    private static class DarkScrollBarUI extends BasicScrollBarUI {
+        @Override
+        protected void configureScrollBarColors() {
+            thumbColor = new Color(90, 90, 90);
+            thumbDarkShadowColor = new Color(20, 20, 20);
+            thumbHighlightColor = new Color(110, 110, 110);
+            thumbLightShadowColor = new Color(70, 70, 70);
+            trackColor = new Color(30, 30, 30);
+            trackHighlightColor = new Color(30, 30, 30);
+        }
+
+        @Override
+        protected JButton createDecreaseButton(int orientation) {
+            return zeroSizeButton();
+        }
+
+        @Override
+        protected JButton createIncreaseButton(int orientation) {
+            return zeroSizeButton();
+        }
+
+        private JButton zeroSizeButton() {
+            JButton button = new JButton();
+            button.setPreferredSize(new Dimension(0, 0));
+            button.setMinimumSize(new Dimension(0, 0));
+            button.setMaximumSize(new Dimension(0, 0));
+            return button;
+        }
+    }
+
+    private static class ScriptPtyConnector implements TtyConnector {
+        private final Process process;
+        private final Reader reader;
+        private final Writer writer;
+
+        ScriptPtyConnector(Process process) {
+            this.process = process;
+            this.reader = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8);
+            this.writer = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public boolean init(Questioner questioner) {
+            return true;
+        }
+
+        @Override
+        public void close() {
+            process.destroy();
+        }
+
+        @Override
+        public String getName() {
+            return "local-shell";
+        }
+
+        @Override
+        public int read(char[] buf, int offset, int length) throws IOException {
+            return reader.read(buf, offset, length);
+        }
+
+        @Override
+        public void write(byte[] bytes) throws IOException {
+            writer.write(new String(bytes, StandardCharsets.UTF_8));
+            writer.flush();
+        }
+
+        @Override
+        public void write(String string) throws IOException {
+            writer.write(string);
+            writer.flush();
+        }
+
+        @Override
+        public boolean isConnected() {
+            return process.isAlive();
+        }
+
+        @Override
+        public int waitFor() throws InterruptedException {
+            return process.waitFor();
+        }
+
+        @Override
+        public boolean ready() throws IOException {
+            return reader.ready();
+        }
+
+        @Override
+        public void resize(Dimension termWinSize) {
+        }
+    }
+
 
     private void resetUiState() {
         appendLog("[SYSTEM] Resetting UI state and reconnecting client loops...");
@@ -247,15 +514,15 @@ public class RobotDashboard extends JPanel {
 
         JButton quickEffectors = createStyledButton("Open Effector Controls (Motors & Servos)");
         JButton quickSensors = createStyledButton("Open Sensor Monitor (Digital, Analog, IMU)");
-        JButton quickSsh = createStyledButton("Open Integrated SSH Terminal");
+        JButton quickTools = createStyledButton("Open Diagnostic Tools");
 
         quickEffectors.addActionListener(e -> switchMainTab("EFFECTORS", btnEffectors));
         quickSensors.addActionListener(e -> switchMainTab("SENSORS", btnSensors));
-        quickSsh.addActionListener(e -> switchMainTab("OTHER", btnOther));
+        quickTools.addActionListener(e -> switchMainTab("OTHER", btnOther));
 
         cardNav.add(quickEffectors);
         cardNav.add(quickSensors);
-        cardNav.add(quickSsh);
+        cardNav.add(quickTools);
 
         JPanel cardInfo = createCardPanel("Target Device Info");
         cardInfo.setLayout(new GridLayout(4, 1, 4, 4));
@@ -647,24 +914,12 @@ public class RobotDashboard extends JPanel {
         JPanel otherPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 12));
         otherPanel.setBackground(BG_DARK);
 
-        JButton btnSsh = createStyledButton("Launch SSH Terminal Session");
-        btnSsh.setFont(new Font("SansSerif", Font.BOLD, 12));
-        btnSsh.addActionListener(e -> launchSshTerminal());
+        JLabel infoLabel = new JLabel("Use the right terminal pane to run interactive shell commands or SSH into user@" + ROBOT_IP);
+        infoLabel.setForeground(TEXT_COLOR);
+        infoLabel.setFont(new Font("SansSerif", Font.PLAIN, 12));
 
-        otherPanel.add(btnSsh);
+        otherPanel.add(infoLabel);
         mainContentPanel.add(otherPanel, "OTHER");
-    }
-
-    private void launchSshTerminal() {
-        appendLog("[SSH] Launching integrated terminal session to user@" + ROBOT_IP + "...");
-        try {
-            ProcessBuilder pb = new ProcessBuilder("ssh", "user@" + ROBOT_IP);
-            pb.redirectErrorStream(true);
-            pb.start();
-            appendLog("[SSH] Process started successfully.");
-        } catch (Exception ex) {
-            appendLog("[SSH ERROR] Unable to spawn process: " + ex.getMessage());
-        }
     }
 
     private JScrollPane createStyledScrollPane(Component content) {
@@ -791,13 +1046,11 @@ public class RobotDashboard extends JPanel {
                     try (Socket socket = new Socket()) {
                         socket.connect(new InetSocketAddress(ROBOT_IP, ROBOT_PORT), 2000);
                         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
-                            lastSuccessfulPacketTime = System.currentTimeMillis();
                             SwingUtilities.invokeLater(() -> updateStatusBadge(true, true, ROBOT_IP));
                             appendLog("[SYSTEM] Connected to server debugger stream at " + ROBOT_IP + ":" + ROBOT_PORT);
 
                             String line;
                             while (threadsRunning && (line = reader.readLine()) != null) {
-                                lastSuccessfulPacketTime = System.currentTimeMillis();
                                 if (!isServerOnline) {
                                     SwingUtilities.invokeLater(() -> updateStatusBadge(true, true, ROBOT_IP));
                                 }
