@@ -9,11 +9,14 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.clion</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.casper1051.ridarintegration.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
         <postStartupActivity implementation="com.github.casper1051.ridarintegration.startup.MyProjectActivity" />
+        <toolWindow id="Robot Control"
+                    anchor="bottom"
+                    factoryClass="com.github.casper1051.ridarintegration.RobotToolWindowFactory"/>
     </extensions>
 </idea-plugin>
