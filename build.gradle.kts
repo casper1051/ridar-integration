@@ -19,7 +19,7 @@ repositories {
 dependencies {
     testImplementation("junit:junit:4.13.2")
 
-    implementation("org.jetbrains.jediterm:jediterm-typeahead:2.58")
+    implementation("org.jetbrains.jediterm:jediterm-typeahead:2.69")
 
     // JetBrains JediTerm Terminal Emulator
     implementation("org.jetbrains.jediterm:jediterm-pty:2.69")
