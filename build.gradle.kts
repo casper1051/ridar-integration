@@ -25,7 +25,7 @@ dependencies {
     implementation("org.jetbrains.jediterm:jediterm-pty:2.69")
 
     // JetBrains Native PTY Wrapper
-    implementation("org.jetbrains.pty4j:pty4j:0.13.12")
+    implementation("org.jetbrains.pty4j:pty4j:0.13.13")
 
 
 
